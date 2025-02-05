@@ -1,5 +1,9 @@
 #pragma once
 
-#include <string>
+#include <iostream>
+#include <vector>
+#include <algorithm> // For sorting (optional, but can improve efficiency in some cases)
 
-const std::string generateHelloString(const std::string & personName);
+using namespace std;
+
+vector<pair<int, int>> findPairs(const vector<int> &arr, int targetSum);
