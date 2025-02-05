@@ -1,5 +1,5 @@
 #include <iostream>
-#include "hello.h"
+#include "modelA.h"
 
 int main(int, char**) {
     std::string helloJim = generateHelloString("Jim");
