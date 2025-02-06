@@ -1,248 +1,195 @@
 #include <iostream>
 #include <thread>
 #include <vector>
-#include <queue>
+#include <chrono>
+#include <random>
+#include <string>
 #include <mutex>
 #include <condition_variable>
-#include <random>
-#include <chrono>
 #include <atomic>
 #include <unordered_set>
 #include <sstream>
-#include <algorithm>
+#include <queue>
 
-#include <cassert>  // For unit tests
+using namespace std;
+using namespace std::chrono;
 
-// Forward declarations
-class Event;
-class EventGenerator;
-class WorkerThread;
+// Configuration parameters
+const int MIN_EVENT_INTERVAL_MS = 1;
+const int MAX_EVENT_INTERVAL_MS = 1000;
+const int RESEND_DELAY_MS = 2000;
 
-// Configuration
-const int NUM_WORKER_THREADS = 5;
-const int EVENT_SEND_DELAY_MS = 2000; // 2 seconds
-const int EVENT_GENERATION_MIN_MS = 1;
-const int EVENT_GENERATION_MAX_MS = 1000;
+// Structure to represent an event
+struct Event {
+    string data;
+    int generator_id;
+    uint64_t sequence_number;
+};
 
-// Global atomic flag to signal shutdown
-std::atomic<bool> g_shutdown(false);
-
-// Thread-safe queue for events
-class ThreadSafeQueue {
+// Thread-safe queue for passing events
+class EventQueue {
 public:
-    void enqueue(Event event) {
+    void enqueue(const Event& event) {
         std::unique_lock<std::mutex> lock(mutex_);
         queue_.push(event);
-        condition_.notify_one();
+        cv_.notify_one();
     }
 
     Event dequeue() {
         std::unique_lock<std::mutex> lock(mutex_);
-        condition_.wait(lock, [this] { return !queue_.empty() || g_shutdown; });
-        if (queue_.empty() && g_shutdown) {
-             // Return a special "shutdown" event.
-            return Event(-1, "SHUTDOWN"); // Assuming -1 is an invalid ID
+        cv_.wait(lock, [this] { return !queue_.empty() || stop_requested_.load(); });
+        if (queue_.empty()) {
+            return {}; // Return an "empty" event if stopped
         }
-
         Event event = queue_.front();
         queue_.pop();
         return event;
     }
 
-    bool empty() const {
+    bool empty() {
         std::lock_guard<std::mutex> lock(mutex_);
         return queue_.empty();
+    }
+
+    void request_stop() {
+        stop_requested_.store(true);
+        cv_.notify_all(); // Wake up all waiting threads
+    }
+
+    bool is_stop_requested() const {
+        return stop_requested_.load();
     }
 
 private:
     std::queue<Event> queue_;
     std::mutex mutex_;
-    std::condition_variable condition_;
+    std::condition_variable cv_;
+    std::atomic<bool> stop_requested_{false};
 };
 
-// Event class
-class Event {
-public:
-    int id;
-    std::string data;
+// Function to generate events
+void event_generator(int generator_id, EventQueue& queue, std::atomic<bool>& stop_flag, std::atomic<uint64_t>& sequence_number) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distrib(MIN_EVENT_INTERVAL_MS, MAX_EVENT_INTERVAL_MS);
 
-    Event(int id, const std::string& data) : id(id), data(data) {}
+    while (!stop_flag.load()) {
+        int interval = distrib(gen);
+        std::this_thread::sleep_for(std::chrono::milliseconds(interval));
 
-    // Overload the == operator for comparing events.  Crucial for testing!
-    bool operator==(const Event& other) const {
-        return (id == other.id) && (data == other.data);
+        if (stop_flag.load()) break; // Check again after sleeping
+
+        Event event;
+        event.data = "Event from generator " + std::to_string(generator_id) + " seq " + std::to_string(sequence_number.load());
+        event.generator_id = generator_id;
+        event.sequence_number = sequence_number.fetch_add(1);
+
+        queue.enqueue(event);
+        std::cout << "Generator " << generator_id << " produced event: " << event.data << std::endl;
     }
-};
+    std::cout << "Generator " << generator_id << " stopped." << std::endl;
+}
 
-// Hash function for Event
-namespace std {
-    template <>
-    struct hash<Event> {
-        size_t operator()(const Event& event) const {
-            size_t h1 = std::hash<int>{}(event.id);
-            size_t h2 = std::hash<std::string>{}(event.data);
-            return h1 ^ (h2 << 1);
-        }
+// Function for a thread in the network
+void event_processor(int thread_id, EventQueue& queue, const std::vector<EventQueue*>& other_queues, std::atomic<bool>& stop_flag) {
+    std::unordered_set<uint64_t> received_events;
+    std::mutex received_events_mutex;
+
+    auto is_duplicate = [&](uint64_t event_id) {
+        std::lock_guard<std::mutex> lock(received_events_mutex);
+        return received_events.count(event_id) > 0;
     };
-}
 
+    auto mark_received = [&](uint64_t event_id) {
+        std::lock_guard<std::mutex> lock(received_events_mutex);
+        received_events.insert(event_id);
+    };
 
-// Event Generator
-class EventGenerator {
-public:
-    EventGenerator(ThreadSafeQueue& queue) : queue_(queue), event_id_(0) {}
-
-    void generateEvents() {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> distrib(EVENT_GENERATION_MIN_MS, EVENT_GENERATION_MAX_MS);
-
-        while (!g_shutdown) {
-            int delay = distrib(gen);
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
-
-            if (g_shutdown) break;
-
-            Event event(event_id_++, "Event data " + std::to_string(event_id_));
-            queue_.enqueue(event);
-            std::cout << "Generated event " << event.id << std::endl;
+    while (!stop_flag.load()) {
+        Event event = queue.dequeue();
+        if (stop_flag.load() || event.data.empty()) {
+            break; // Exit if stop requested or empty event received.
         }
 
-        std::cout << "Event generator stopped." << std::endl;
-    }
+        uint64_t event_id = ((uint64_t)event.generator_id << 32) | event.sequence_number;
 
-private:
-    ThreadSafeQueue& queue_;
-    int event_id_;
-};
+        if (!is_duplicate(event_id)) {
+            std::cout << "Thread " << thread_id << " received event: " << event.data << std::endl;
+            mark_received(event_id);
 
-
-// Worker Thread
-class WorkerThread {
-public:
-    WorkerThread(int id, ThreadSafeQueue& queue, std::vector<WorkerThread*>& others)
-        : id_(id), queue_(queue), others_(others) {}
-
-    void processEvents() {
-        std::unordered_set<Event> received_events; // Deduplication
-
-        while (!g_shutdown) {
-            Event event = queue_.dequeue();
-
-            if (event.id == -1 && event.data == "SHUTDOWN") { //Special shutdown event
-                break;
-            }
-
-            if (received_events.find(event) == received_events.end()) {
-                received_events.insert(event);
-                std::cout << "Thread " << id_ << " received event " << event.id << std::endl;
-
-                // Resend to other threads (with a delay)
-                std::thread([this, event]() {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(EVENT_SEND_DELAY_MS));
-                    if (!g_shutdown) {
-                        for (WorkerThread* other : others_) {
-                            if (other != this) {
-                                other->queue_.enqueue(event);
-                            }
+            // Resend to other threads
+            for (EventQueue* other_queue : other_queues) {
+                if (other_queue != &queue) {
+                    std::thread([other_queue, event, &stop_flag]() {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(RESEND_DELAY_MS));
+                        if (!stop_flag.load()) {
+                            other_queue->enqueue(event);
                         }
-                    }
-                }).detach(); // Detach so it doesn't block
-            } else {
-                std::cout << "Thread " << id_ << " ignoring duplicate event " << event.id << std::endl;
+                    }).detach();
+                }
             }
+        } else {
+            std::cout << "Thread " << thread_id << " received duplicate event, ignoring." << std::endl;
         }
-        std::cout << "Thread " << id_ << " stopped." << std::endl;
     }
 
-private:
-    int id_;
-    ThreadSafeQueue& queue_;
-    std::vector<WorkerThread*>& others_;
-};
-
-// Unit Tests (using assert for simplicity)
-void testThreadSafeQueue() {
-    ThreadSafeQueue queue;
-    Event event1(1, "Test event 1");
-    Event event2(2, "Test event 2");
-
-    queue.enqueue(event1);
-    queue.enqueue(event2);
-
-    Event dequeued_event1 = queue.dequeue();
-    Event dequeued_event2 = queue.dequeue();
-
-    assert(dequeued_event1 == event1);
-    assert(dequeued_event2 == event2);
-    assert(queue.empty());
-
-    std::cout << "ThreadSafeQueue tests passed" << std::endl;
-}
-
-void testEventEquality() {
-    Event event1(1, "Test event");
-    Event event2(1, "Test event");
-    Event event3(2, "Different event");
-
-    assert(event1 == event2);
-    assert(!(event1 == event3));
-
-    std::cout << "Event equality tests passed" << std::endl;
+    std::cout << "Thread " << thread_id << " stopped." << std::endl;
 }
 
 int main() {
-    // Run unit tests
-    testThreadSafeQueue();
-    testEventEquality();
+    int num_threads = 3;
+    std::atomic<bool> stop_flag(false);
+    std::atomic<uint64_t> sequence_number(0);
 
-    ThreadSafeQueue event_queue;
-    EventGenerator generator(event_queue);
-
-    std::vector<WorkerThread*> workers;
-    std::vector<std::thread> worker_threads;
-
-    // Create worker threads
-    for (int i = 0; i < NUM_WORKER_THREADS; ++i) {
-        workers.push_back(new WorkerThread(i, event_queue, workers));
+    std::vector<EventQueue> queues(num_threads);
+    std::vector<std::thread> threads;
+    std::vector<EventQueue*> queue_ptrs;
+    for (auto& q : queues) {
+        queue_ptrs.push_back(&q);
     }
 
-    // Now that all workers are created, update the 'others' vector for each.
-    for (WorkerThread* worker : workers) {
-        worker->others_ = workers; //Crucial to set the others vector correctly.
+    // Create and start the event generator
+    EventQueue generator_queue;
+    std::thread generator_thread(event_generator, 0, std::ref(generator_queue), std::ref(stop_flag), std::ref(sequence_number));
+    threads.push_back(std::move(generator_thread));
+    queue_ptrs.push_back(&generator_queue);
+
+    // Create and start the threads in the network
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(event_processor, i + 1, std::ref(queues[i]), queue_ptrs, std::ref(stop_flag));
     }
 
-    // Launch threads
-    std::thread generator_thread(&EventGenerator::generateEvents, &generator);
-    for (int i = 0; i < NUM_WORKER_THREADS; ++i) {
-        worker_threads.emplace_back(&WorkerThread::processEvents, workers[i]);
-    }
+    // Route events from generator to the threads
+    std::thread generator_router([&]() {
+        while (!stop_flag.load()) {
+            Event event = generator_queue.dequeue();
+            if (stop_flag.load() || event.data.empty()) break;
+            for (auto& q : queues) {
+                q.enqueue(event);
+            }
+        }
+    });
+    threads.push_back(std::move(generator_router));
 
-    // Wait for user input to shutdown
-    std::cout << "Press Enter to shutdown..." << std::endl;
+
+    // Wait for user input to stop the threads
+    std::cout << "Press Enter to stop the threads..." << std::endl;
     std::cin.get();
-    std::cout << "Shutting down..." << std::endl;
 
-    // Signal shutdown
-    g_shutdown = true;
-
-    // Wake up all waiting threads by enqueueing shutdown events.
-    for(int i = 0; i < NUM_WORKER_THREADS; ++i){
-        event_queue.enqueue(Event(-1, "SHUTDOWN")); // Enqueue shutdown events
+    stop_flag.store(true);
+    generator_queue.request_stop();
+    for (auto& queue : queues) {
+        queue.request_stop();
     }
+    
 
-    // Join threads
-    generator_thread.join();
-    for (auto& thread : worker_threads) {
+    // Join all threads
+    for (auto& thread : threads) {
         thread.join();
     }
 
-    // Cleanup
-    for (WorkerThread* worker : workers) {
-        delete worker;
-    }
-
-    std::cout << "Shutdown complete." << std::endl;
+    std::cout << "All threads stopped." << std::endl;
 
     return 0;
 }
+

@@ -13,3 +13,5 @@ if(PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME)
     add_subdirectory(tests)   # look in tests subdirectory for CMakeLists.txt to process
 endif() #PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
