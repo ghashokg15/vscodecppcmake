@@ -9,7 +9,7 @@ using namespace std;
 
 vector<pair<int, int>> findPairs(const vector<int> &arr, int targetSum);
 
-struct Event;
-class EventQueue;
-void event_generator(int generator_id, EventQueue& queue, std::atomic<bool>& stop_flag, std::atomic<uint64_t>& sequence_number);
-void event_processor(int thread_id, EventQueue& queue, const std::vector<EventQueue*>& other_queues, std::atomic<bool>& stop_flag);
+template <typename T>
+void find_combinations_with_target_sum(vector<T>& in, vector<vector<T>>& out, vector<T>& current, T target_sum, int index);
+
+
