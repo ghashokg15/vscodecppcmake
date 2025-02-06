@@ -49,7 +49,42 @@ void remove_duplicates_and_sort(vector<T>& v)
     v.assign(s.begin(), s.end());
 }
 
+
+int maximum(int n)
+{
+    return n;
+}
+
+template<typename... Args>
+int maximum(int n, Args... rest)
+{
+    //cout << rest... << endl;
+    return max(n, maximum(rest...));
+}
+
+// template<typename T, typename U>
+// void my_print(T t, U u){
+//     std::cout << t << "," << u << endl;
+// }
+template<typename T>
+void my_print(T t) {
+    cout << t << endl;
+}
+
+template <typename T, typename... Args>
+void my_print(T t, Args ...args)
+{
+    std::cout << t << ", ";
+    my_print(args...);
+}
+
+
 int main() {
+    int m = maximum(3, 2, 5, -7, 1);
+    std::cout << m << endl;
+
+    my_print(3, 2, 56, 5, "string", 5.7);
+/*
     vector<int> v = {3, 6, 9, 2, 5, 7, 1, 1, 2, 3, 5};
     vector<vector<int>> ans = {};
     vector<int> current;
@@ -59,4 +94,5 @@ int main() {
     find_combinations_with_target_sum(v, ans, current, 15, 0);
     print_combinations<int>(ans);
     return 0;    
+*/
 }
