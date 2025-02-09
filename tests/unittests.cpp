@@ -1,271 +1,533 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <vector>
 #include <string>
-#include <cmath>
 #include <algorithm>
-#include <limits>
-#include <tuple>
+#include <cassert>
+#include <stdexcept>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
-#include <sstream>
-#include <thread>
 #include <mutex>
+#include <thread>
+#include <random>
+#include <unordered_map>
+#include <shared_mutex>
 
-using namespace std;
+#include <nlohmann/json.hpp>
 
-// Define structures for data
-struct Point {
-    int x;
-    int y;
-};
+using json = nlohmann::json;
 
-struct Hospital {
-    string name;
-    int id;
-    Point location;
-    vector<string> facilities; //list of treatment facilities in the hospital.
-};
+// Helper function to generate a random string of specified length
+std::string generateRandomString(size_t length) {
+    const std::string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    std::random_device random_device;
+    std::mt19937 generator(random_device());
+    std::uniform_int_distribution<> distribution(0, characters.size() - 1);
 
-struct Doctor {
-    string name;
-    int id;
-    string department;
-};
+    std::string random_string;
+    for (size_t i = 0; i < length; ++i) {
+        random_string += characters[distribution(generator)];
+    }
 
-struct DoctorAvailability {
-    int hospital_id;
-    int doctor_id;
-    int start_time_hour;
-    int start_time_min;
-    int end_time_hour;
-    int end_time_min;
-};
-
-struct PatientDetails {
-    string name;
-    string illness;
-    Point location;
-    int seriousness;
-};
-
-struct AppointmentDetails {
-    bool status;
-    string reason;
-    string hospital_name;
-    int doctor_id;
-    string doctor_name;
-    string date;
-    string time;
-    Point hospital_location;
-
-    AppointmentDetails() : status(false), reason(""), hospital_name(""), doctor_id(-1), doctor_name(""), date(""), time(""), hospital_location({0, 0}) {}
-};
-
-// Global data (consider using a class to encapsulate this)
-Point city_boundary_min = {0, 0};
-Point city_boundary_max = {100, 100};
-
-vector<Hospital> hospitals = {
-    {"Downtown Medical Center", 1, {60, 70}, {"Cardiology", "Dental", "Ortho", "General"}},
-    {"City General Hospital", 2, {20, 30}, {"Neurology", "General"}},
-    {"Uptown Clinic", 3, {80, 20}, {"Ortho", "Eye"}},
-    {"Outer Clinic", 4, {120, 20}, {"Ortho"}}
-};
-
-vector<Doctor> doctors = {
-    {"Dr. Lal", 1, "Cardiology"},
-    {"Dr. Leela", 2, "Neurology"},
-    {"Dr. Chaudhary", 3, "Ortho"},
-    {"Dr. Bansal", 4, "Cardiology"},
-    {"Dr. Alex", 5, "Neurology"},
-    {"Dr. Romero", 6, "Ortho"},
-    {"Dr. Stewen", 7, "Dental"},
-    {"Dr. Owama", 8, "Eye"},
-    {"Dr. Keerthi", 9, "General"},
-    {"Dr. Leelavathi", 10, "General"},
-    {"Dr. Phirno", 11, "General"}
-};
-
-vector<DoctorAvailability> doctor_availability = {
-    {1, 3, 10, 0, 23, 0},
-    {1, 7, 6, 0, 15, 0},
-    {3, 3, 12, 0, 22, 0},
-    {4, 6, 16, 0, 21, 0}
-};
-
-// Helper functions
-double calculate_distance(Point p1, Point p2) {
-    return sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2));
+    return random_string;
 }
 
-bool is_within_city_limits(Point location) {
-    return (location.x >= city_boundary_min.x && location.x <= city_boundary_max.x &&
-            location.y >= city_boundary_min.y && location.y <= city_boundary_max.y);
-}
 
-AppointmentDetails book_appointment(PatientDetails patient) {
-    AppointmentDetails appointment;
+class User {
+private:
+    std::string id;
+    std::string name;
+    std::string role; // "patient" or "doctor"
 
-    if (!is_within_city_limits(patient.location)) {
-        appointment.status = false;
-        appointment.reason = "Patient location is outside city limits.";
-        return appointment;
+public:
+    User() : id(generateRandomString(10)), name(""), role("") {}
+    User(const std::string& id, const std::string& name, const std::string& role) : id(id), name(name), role(role) {}
+
+    std::string getId() const { return id; }
+    std::string getName() const { return name; }
+    std::string getRole() const { return role; }
+
+    void setId(const std::string& id) { this->id = id; }
+    void setName(const std::string& name) { this->name = name; }
+    void setRole(const std::string& role) { this->role = role; }
+
+    // JSON serialization/deserialization
+    json toJson() const {
+        return {
+            {"id", id},
+            {"name", name},
+            {"role", role}
+        };
     }
 
-    // Find suitable hospitals based on patient's illness
-    vector<Hospital> suitable_hospitals;
-    for (const auto& hospital : hospitals) {
-        for (const auto& facility : hospital.facilities) {
-            if (facility == patient.illness) {
-                suitable_hospitals.push_back(hospital);
-                break;
-            } else if (patient.illness == "General" && find(hospital.facilities.begin(), hospital.facilities.end(), "General") != hospital.facilities.end()) {
-                suitable_hospitals.push_back(hospital);
-                break;
-            }
-        }
+    static User fromJson(const json& j) {
+        return User(j["id"], j["name"], j["role"]);
     }
 
-    if (suitable_hospitals.empty()) {
-        appointment.status = false;
-        appointment.reason = "No suitable hospital found for the patient's illness.";
-        return appointment;
+    //Overload == operator for comparison
+    bool operator==(const User& other) const {
+        return (id == other.id && name == other.name && role == other.role);
+    }
+};
+
+class Appointment {
+private:
+    std::string id;
+    std::string date; // YYYY-MM-DD
+    std::string time; // HH:MM
+    std::vector<std::string> participants; // User IDs
+
+public:
+    Appointment() : id(generateRandomString(10)), date(""), time(""), participants({}) {}
+    Appointment(const std::string& id, const std::string& date, const std::string& time, const std::vector<std::string>& participants)
+        : id(id), date(date), time(time), participants(participants) {}
+
+    std::string getId() const { return id; }
+    std::string getDate() const { return date; }
+    std::string getTime() const { return time; }
+    std::vector<std::string> getParticipants() const { return participants; }
+
+    void setId(const std::string& id) { this->id = id; }
+    void setDate(const std::string& date) { this->date = date; }
+    void setTime(const std::string& time) { this->time = time; }
+    void setParticipants(const std::vector<std::string>& participants) { this->participants = participants; }
+
+    // JSON serialization/deserialization
+    json toJson() const {
+        return {
+            {"id", id},
+            {"date", date},
+            {"time", time},
+            {"participants", participants}
+        };
     }
 
-    // Find the nearest hospital among the suitable ones
-    Hospital nearest_hospital = suitable_hospitals[0];
-    double min_distance = numeric_limits<double>::max();
-    for (const auto& hospital : suitable_hospitals) {
-        double distance = calculate_distance(patient.location, hospital.location);
-        if (distance < min_distance) {
-            min_distance = distance;
-            nearest_hospital = hospital;
-        }
+    static Appointment fromJson(const json& j) {
+        return Appointment(j["id"], j["date"], j["time"], j["participants"].get<std::vector<std::string>>());
     }
 
-    // Find available doctors at the nearest hospital
-    vector<pair<Doctor, DoctorAvailability>> available_doctors;
-    for (const auto& availability : doctor_availability) {
-        if (availability.hospital_id == nearest_hospital.id) {
-            for (const auto& doctor : doctors) {
-                if (doctor.id == availability.doctor_id && doctor.department == patient.illness) {
-                    available_doctors.push_back({doctor, availability});
-                    break;
-                } else if (patient.illness == "General" && doctor.id == availability.doctor_id) {
-                    available_doctors.push_back({doctor, availability});
-                    break;
+    //Overload == operator for comparison
+    bool operator==(const Appointment& other) const {
+        return (id == other.id && date == other.date && time == other.time && participants == other.participants);
+    }
+};
+
+class AppointmentSystem {
+private:
+    std::string appointmentsFile = "appointments.json";
+    std::string usersFile = "users.json";
+
+    // Use unordered_map for efficient lookups
+    std::unordered_map<std::string, Appointment> appointments;
+    std::unordered_map<std::string, User> users;
+
+    // Use shared_mutex for concurrent read/write access
+    std::shared_mutex appointmentsMutex;
+    std::shared_mutex usersMutex;
+
+    // Helper function to load data from JSON file
+    template <typename T>
+    void loadData(const std::string& filename, std::unordered_map<std::string, T>& data, std::shared_mutex& mutex) {
+        std::ifstream file(filename);
+        if (file.is_open()) {
+            try {
+                json j;
+                file >> j;
+                std::unique_lock<std::shared_mutex> lock(mutex); // Exclusive write lock
+                for (auto& item : j.items()) {
+                    data[item.key()] = T::fromJson(item.value());
                 }
             }
+            catch (const json::parse_error& e) {
+                std::cerr << "Error parsing JSON file: " << filename << " - " << e.what() << std::endl;
+            }
+        }
+        else {
+            std::cerr << "Error opening file: " << filename << std::endl;
         }
     }
 
-    if (available_doctors.empty()) {
-        appointment.status = false;
-        appointment.reason = "No available doctors found at the nearest hospital.";
-        return appointment;
-    }
+    // Helper function to save data to JSON file
+    template <typename T>
+    void saveData(const std::string& filename, const std::unordered_map<std::string, T>& data, std::shared_mutex& mutex) {
+        json j;
+        std::shared_lock<std::shared_mutex> lock(mutex); // Shared read lock
+        for (const auto& item : data) {
+            j[item.first] = item.second.toJson();
+        }
 
-    // Get current time
-    auto now = chrono::system_clock::now();
-    time_t current_time = chrono::system_clock::to_time_t(now);
-    tm local_time;
-    localtime_r(&current_time, &local_time);
-
-    // Find an available doctor based on time
-    Doctor selected_doctor;
-    DoctorAvailability selected_availability;
-    bool doctor_found = false;
-    for (const auto& doctor_pair : available_doctors) {
-        const Doctor& doctor = doctor_pair.first;
-        const DoctorAvailability& availability = doctor_pair.second;
-
-        if (local_time.tm_hour >= availability.start_time_hour && local_time.tm_hour <= availability.end_time_hour) {
-            if (local_time.tm_hour == availability.start_time_hour && local_time.tm_min < availability.start_time_min) {
-                continue;
-            }
-            if (local_time.tm_hour == availability.end_time_hour && local_time.tm_min > availability.end_time_min) {
-                continue;
-            }
-            selected_doctor = doctor;
-            selected_availability = availability;
-            doctor_found = true;
-            break;
+        std::ofstream file(filename);
+        if (file.is_open()) {
+            file << std::setw(4) << j << std::endl;
+        }
+        else {
+            std::cerr << "Error opening file for writing: " << filename << std::endl;
         }
     }
 
-    if (!doctor_found) {
-        appointment.status = false;
-        appointment.reason = "No doctor available at the current time.";
-        return appointment;
+    bool isValidAppointmentTime(const std::string& time) {
+        try {
+            int hour = std::stoi(time.substr(0, 2));
+            int minute = std::stoi(time.substr(3, 2));
+
+            if (hour < 9 || hour > 19) return false; // 9:00am to 8:00pm (20:00)
+            if (minute != 0 && minute != 30) return false; // Only allow on the hour or half hour
+            if (hour == 19 && minute == 30) return false; // Last appointment is at 8:00pm
+
+            return true;
+        }
+        catch (const std::invalid_argument& e) {
+            std::cerr << "Invalid time format: " << time << std::endl;
+            return false;
+        }
+        catch (const std::out_of_range& e) {
+            std::cerr << "Time out of range: " << time << std::endl;
+            return false;
+        }
     }
 
-    // Format date and time
-    stringstream date_stream;
-    date_stream << put_time(&local_time, "%d-%m-%Y");
-    appointment.date = date_stream.str();
+    bool isValidAppointmentDate(const std::string& date) {
+        std::time_t t = std::time(nullptr);
+        std::tm now = *std::localtime(&t);
 
-    stringstream time_stream;
-    time_stream << setfill('0') << setw(2) << selected_availability.start_time_hour << ":" << setfill('0') << setw(2) << selected_availability.start_time_min;
-    appointment.time = time_stream.str();
+        std::tm input_time = {};
+        std::istringstream ss(date);
+        ss >> std::get_time(&input_time, "%Y-%m-%d");
+        if (ss.fail()) {
+            return false;
+        }
+        input_time.tm_isdst = -1; // Important: Allow the mktime() function to determine if DST is in effect
 
-    // Appointment successful
-    appointment.status = true;
-    appointment.hospital_name = nearest_hospital.name;
-    appointment.doctor_id = selected_doctor.id;
-    appointment.doctor_name = selected_doctor.name;
-    appointment.hospital_location = nearest_hospital.location;
-    appointment.reason = "";
+        std::time_t input_time_t = std::mktime(&input_time);
+        std::time_t now_time_t = std::mktime(&now);
 
-    return appointment;
+        if (input_time_t < now_time_t) {
+            return false;
+        }
+
+        return true;
+    }
+
+
+public:
+    AppointmentSystem() {
+        loadData(appointmentsFile, appointments, appointmentsMutex);
+        loadData(usersFile, users, usersMutex);
+    }
+
+    ~AppointmentSystem() {
+        saveData(appointmentsFile, appointments, appointmentsMutex);
+        saveData(usersFile, users, usersMutex);
+    }
+
+    // User management
+    bool addUser(const User& user) {
+        std::unique_lock<std::shared_mutex> lock(usersMutex);
+        if (users.find(user.getId()) != users.end()) {
+            std::cerr << "User with ID " << user.getId() << " already exists." << std::endl;
+            return false;
+        }
+        users[user.getId()] = user;
+        return true;
+    }
+
+    bool removeUser(const std::string& userId) {
+        std::unique_lock<std::shared_mutex> lock(usersMutex);
+        if (users.find(userId) == users.end()) {
+            std::cerr << "User with ID " << userId << " not found." << std::endl;
+            return false;
+        }
+        users.erase(userId);
+        return true;
+    }
+
+    User getUser(const std::string& userId) {
+        std::shared_lock<std::shared_mutex> lock(usersMutex);
+        auto it = users.find(userId);
+        if (it != users.end()) {
+            return it->second;
+        }
+        else {
+            throw std::runtime_error("User not found");
+        }
+    }
+
+
+    // Adds an appointment
+    bool addAppointment(const Appointment& appointment) {
+        if (!isValidAppointmentTime(appointment.getTime())) {
+            std::cerr << "Invalid appointment time: " << appointment.getTime() << std::endl;
+            return false;
+        }
+
+        if (!isValidAppointmentDate(appointment.getDate())) {
+            std::cerr << "Invalid appointment date: " << appointment.getDate() << std::endl;
+            return false;
+        }
+        std::unique_lock<std::shared_mutex> lock(appointmentsMutex); // Acquire exclusive write lock
+        if (appointments.find(appointment.getId()) != appointments.end()) {
+            std::cerr << "Appointment with ID " << appointment.getId() << " already exists." << std::endl;
+            return false;
+        }
+        appointments[appointment.getId()] = appointment;
+        return true;
+    }
+
+    // Modifies appointment
+    bool modifyAppointment(const std::string& appointmentId, const Appointment& newAppointment) {
+        if (!isValidAppointmentTime(newAppointment.getTime())) {
+            std::cerr << "Invalid appointment time: " << newAppointment.getTime() << std::endl;
+            return false;
+        }
+
+        if (!isValidAppointmentDate(newAppointment.getDate())) {
+            std::cerr << "Invalid appointment date: " << newAppointment.getDate() << std::endl;
+            return false;
+        }
+        std::unique_lock<std::shared_mutex> lock(appointmentsMutex); // Acquire exclusive write lock
+        if (appointments.find(appointmentId) == appointments.end()) {
+            std::cerr << "Appointment with ID " << appointmentId << " not found." << std::endl;
+            return false;
+        }
+        appointments[appointmentId] = newAppointment;
+        return true;
+    }
+
+    // Removes appointment
+    bool removeAppointment(const std::string& appointmentId) {
+        std::unique_lock<std::shared_mutex> lock(appointmentsMutex); // Acquire exclusive write lock
+        if (appointments.find(appointmentId) == appointments.end()) {
+            std::cerr << "Appointment with ID " << appointmentId << " not found." << std::endl;
+            return false;
+        }
+        appointments.erase(appointmentId);
+        return true;
+    }
+
+    // List appointments
+    std::vector<Appointment> listAppointments(const std::string& date, const std::string& time) {
+        std::vector<Appointment> result;
+        std::shared_lock<std::shared_mutex> lock(appointmentsMutex); // Acquire shared read lock
+        for (const auto& pair : appointments) {
+            const Appointment& appointment = pair.second;
+            if ((date.empty() || appointment.getDate() == date) && (time.empty() || appointment.getTime() == time)) {
+                result.push_back(appointment);
+            }
+        }
+
+        // Sort by date and time
+        std::sort(result.begin(), result.end(), [](const Appointment& a, const Appointment& b) {
+            if (a.getDate() != b.getDate()) {
+                return a.getDate() < b.getDate();
+            }
+            return a.getTime() < b.getTime();
+        });
+
+        return result;
+    }
+
+    // Search appointments by participant
+    std::vector<Appointment> searchAppointmentsByParticipant(const std::string& participantId) {
+        std::vector<Appointment> result;
+        std::shared_lock<std::shared_mutex> lock(appointmentsMutex);
+        for (const auto& pair : appointments) {
+            const Appointment& appointment = pair.second;
+            if (std::find(appointment.getParticipants().begin(), appointment.getParticipants().end(), participantId) != appointment.getParticipants().end()) {
+                result.push_back(appointment);
+            }
+        }
+        return result;
+    }
+};
+
+
+void testAppointmentSystem() {
+    AppointmentSystem system;
+
+    // Create test users
+    User doctor1("doctor1", "Dr. Smith", "doctor");
+    User patient1("patient1", "John Doe", "patient");
+    User patient2("patient2", "Jane Doe", "patient");
+
+    assert(system.addUser(doctor1));
+    assert(system.addUser(patient1));
+    assert(system.addUser(patient2));
+
+    // Test addAppointment
+    Appointment appointment1("appt1", "2025-02-10", "10:00", { "doctor1", "patient1" });
+    assert(system.addAppointment(appointment1));
+
+    Appointment appointment2("appt2", "2025-02-10", "10:30", { "doctor1", "patient2" });
+    assert(system.addAppointment(appointment2));
+
+    Appointment appointment3("appt3", "2025-02-11", "09:00", { "doctor1", "patient1" });
+    assert(system.addAppointment(appointment3));
+
+    // Test listAppointments
+    std::vector<Appointment> appointmentsOnDate = system.listAppointments("2025-02-10", "");
+    assert(appointmentsOnDate.size() == 2);
+    assert(appointmentsOnDate[0].getId() == "appt1");
+    assert(appointmentsOnDate[1].getId() == "appt2");
+
+    // Test modifyAppointment
+    Appointment modifiedAppointment = appointment1;
+    modifiedAppointment.setTime("11:00");
+    assert(system.modifyAppointment("appt1", modifiedAppointment));
+    std::vector<Appointment> appointmentsAfterModification = system.listAppointments("2025-02-10", "11:00");
+    assert(appointmentsAfterModification.size() == 1);
+    assert(appointmentsAfterModification[0].getId() == "appt1");
+
+    // Test searchAppointmentsByParticipant
+    std::vector<Appointment> appointmentsWithPatient1 = system.searchAppointmentsByParticipant("patient1");
+    assert(appointmentsWithPatient1.size() == 2); // appt1 (modified) and appt3
+
+    // Test removeAppointment
+    assert(system.removeAppointment("appt2"));
+    std::vector<Appointment> appointmentsAfterRemoval = system.listAppointments("2025-02-10", "");
+    assert(appointmentsAfterRemoval.size() == 1); // Only appt1 should remain
+
+    assert(system.removeUser("doctor1"));
+    assert(system.removeUser("patient1"));
+    assert(system.removeUser("patient2"));
+
+    std::cout << "All tests passed!" << std::endl;
 }
 
-#include "gtest/gtest.h"
 
-TEST(BookingAgentTest, SuccessfulBooking) {
-    PatientDetails patient = {"geetha", "Dental", {50, 30}, 4};
-    AppointmentDetails result = book_appointment(patient);
+void generateTestData(const std::string& appointmentsFile, const std::string& usersFile) {
+    json appointmentsJson;
+    json usersJson;
 
-    ASSERT_TRUE(result.status);
-    ASSERT_EQ(result.hospital_name, "Downtown Medical Center");
-    ASSERT_EQ(result.doctor_name, "Dr. Stewen");
+    // Generate a large number of appointments
+    for (int i = 0; i < 100; ++i) {
+        std::string appointmentId = "appt" + std::to_string(i);
+        int day = 10 + (i % 5); // Dates between 2025-02-10 and 2025-02-14
+        int hour = 9 + (i % 11); // Times between 9:00 and 19:00
+        int minute = (i % 2) * 30; // Either 00 or 30 minutes
+        std::string date = "2025-02-" + std::to_string(day);
+        std::string time = std::to_string(hour) + ":" + (minute == 0 ? "00" : "30");
+
+        appointmentsJson[appointmentId] = {
+            {"id", appointmentId},
+            {"date", date},
+            {"time", time},
+            {"participants", {"doctor1", "patient" + std::to_string(i % 10)}} // 10 different patients
+        };
+    }
+
+    // Generate some users (doctors and patients)
+    usersJson["doctor1"] = {{"id", "doctor1"}, {"name", "Dr. Smith"}, {"role", "doctor"}};
+    for (int i = 0; i < 10; ++i) {
+        usersJson["patient" + std::to_string(i)] = {
+            {"id", "patient" + std::to_string(i)},
+            {"name", "Patient " + std::to_string(i)},
+            {"role", "patient"}
+        };
+    }
+
+    // Write to files
+    std::ofstream appointmentsFileStream(appointmentsFile);
+    if (appointmentsFileStream.is_open()) {
+        appointmentsFileStream << std::setw(4) << appointmentsJson << std::endl;
+    }
+    else {
+        std::cerr << "Error opening file for writing: " << appointmentsFile << std::endl;
+    }
+
+    std::ofstream usersFileStream(usersFile);
+    if (usersFileStream.is_open()) {
+        usersFileStream << std::setw(4) << usersJson << std::endl;
+    }
+    else {
+        std::cerr << "Error opening file for writing: " << usersFile << std::endl;
+    }
 }
 
-TEST(BookingAgentTest, PatientOutsideCityLimits) {
-    PatientDetails patient = {"outsider", "General", {150, 150}, 2};
-    AppointmentDetails result = book_appointment(patient);
+void concurrentAccessTest() {
+    AppointmentSystem system;
 
-    ASSERT_FALSE(result.status);
-    ASSERT_EQ(result.reason, "Patient location is outside city limits.");
+    // Add some initial data
+    User doctor1("doctor1", "Dr. Smith", "doctor");
+    User patient1("patient1", "John Doe", "patient");
+    system.addUser(doctor1);
+    system.addUser(patient1);
+
+    Appointment appointment1("appt1", "2025-02-15", "10:00", { "doctor1", "patient1" });
+    system.addAppointment(appointment1);
+
+    // Number of threads and iterations
+    const int numThreads = 5;
+    const int numIterations = 100;
+
+    // Lambda function for concurrent access
+    auto concurrentTask = [&](int threadId) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> distrib(0, 9);
+
+        for (int i = 0; i < numIterations; ++i) {
+            try {
+                // Randomly perform operations
+                int operation = distrib(gen) % 4;
+
+                if (operation == 0) {
+                    // Add a new appointment
+                    Appointment newAppointment("appt_thread" + std::to_string(threadId) + "_" + std::to_string(i),
+                        "2025-02-16", "11:00", { "doctor1", "patient1" });
+                    system.addAppointment(newAppointment);
+                }
+                else if (operation == 1) {
+                    // Modify an existing appointment
+                    Appointment modifiedAppointment = appointment1;
+                    modifiedAppointment.setTime("12:00");
+                    system.modifyAppointment("appt1", modifiedAppointment);
+                }
+                else if (operation == 2) {
+                    // List appointments
+                    system.listAppointments("2025-02-15", "");
+                }
+                else {
+                    // Search appointments by participant
+                    system.searchAppointmentsByParticipant("patient1");
+                }
+            }
+            catch (const std::exception& e) {
+                std::cerr << "Exception in thread " << threadId << ": " << e.what() << std::endl;
+            }
+        }
+    };
+
+    // Create and launch threads
+    std::vector<std::thread> threads;
+    for (int i = 0; i < numThreads; ++i) {
+        threads.emplace_back(concurrentTask, i);
+    }
+
+    // Join threads
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    // Clean up
+    system.removeUser("doctor1");
+    system.removeUser("patient1");
+    system.removeAppointment("appt1");
+
+    std::cout << "Concurrent access test completed." << std::endl;
 }
 
-TEST(BookingAgentTest, NoSuitableHospital) {
-    PatientDetails patient = {"no_hospital", "UnknownIllness", {50, 50}, 3};
-    AppointmentDetails result = book_appointment(patient);
 
-    ASSERT_FALSE(result.status);
-    ASSERT_EQ(result.reason, "No suitable hospital found for the patient's illness.");
-}
+int main() {
+    // Generate test data
+    generateTestData("appointments.json", "users.json");
 
-TEST(BookingAgentTest, GeneralPatientBooking) {
-    PatientDetails patient = {"general_patient", "General", {50, 30}, 4};
-    AppointmentDetails result = book_appointment(patient);
+    // Run unit tests
+    testAppointmentSystem();
 
-    ASSERT_TRUE(result.status);
-}
+    // Run concurrent access test
+    concurrentAccessTest();
 
-TEST(BookingAgentTest, NoDoctorAvailableAtTheCurrentTime) {
-    PatientDetails patient = {"no_doctor_time", "Dental", {50, 30}, 4};
-    AppointmentDetails result = book_appointment(patient);
-
-    //Note: This test result will depend on the current time when the test is run.
-    //If no doctor is available at the current time, the test should pass.
-    //Otherwise, the test will fail. We cannot reliably test for doctor unavailability without mocking the current time.
-    //So, we make sure the test passes even when booking is succesful.
-    ASSERT_TRUE(result.status);
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    return 0;
 }

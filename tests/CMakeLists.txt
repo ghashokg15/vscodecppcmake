@@ -43,6 +43,12 @@ macro(package_add_test_with_libraries TESTNAME FILES LIBRARIES TEST_WORKING_DIRE
     set_target_properties(${TESTNAME} PROPERTIES FOLDER tests)
 endmacro()
 
+FetchContent_Declare(json
+    GIT_REPOSITORY https://github.com/nlohmann/json
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(json)
+
 message("${PROJECT_DIR}")
 
-package_add_test_with_libraries(UnitTests unittests.cpp modelA "${PROJECT_DIR}")
+package_add_test_with_libraries(UnitTests unittests.cpp modelA nlohmann_json::nlohmann_json"${PROJECT_DIR}")
