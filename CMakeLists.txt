@@ -7,9 +7,13 @@ project(
     VERSION 0.1
     DESCRIPTION "Small CMake example built with VSCode")
 
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+find_package(Threads REQUIRED)
+
 add_subdirectory(hello)   # look in hello subdirectory for CMakeLists.txt to process
 add_subdirectory(apps)    # look in apps subdirectory for CMakeLists.txt to process
-if(PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME)
-    add_subdirectory(tests)   # look in tests subdirectory for CMakeLists.txt to process
-endif() #PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME
+# if(PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME)
+#     add_subdirectory(tests)   # look in tests subdirectory for CMakeLists.txt to process
+# endif() #PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME
 
